@@ -6,6 +6,7 @@
 <title>Compressor</title>
 <style>
   :root { color-scheme: dark; --thumb: 16px; }
+  [hidden] { display: none !important; }
   body {
     margin: 0; padding: 16px; background: #000; color: #ddd;
     font: 15px/1.6 system-ui, sans-serif;
@@ -67,15 +68,15 @@
   <canvas id="graph"></canvas>
   <button id="reset">グラフリセット</button>
 
-  <div class="tune">
+  <div class="tune" hidden>
     <span>att time</span><span>|</span>
     <input id="att" type="range" min="0" max="1000" step="1" value="100">
     <span>|</span><span class="value" id="attValue"></span>
     <span>ratio</span><span>0</span>
-    <input id="ratio" type="range" min="0" max="1" step="0.01" value="0">
+    <input id="ratio" type="range" min="0" max="1" step="0.01" value="0.1">
     <span>1</span><span class="value" id="ratioValue"></span>
   </div>
-  <canvas id="curve"></canvas>
+  <canvas id="curve" hidden></canvas>
 </main>
 
 <script id="worklet" type="text/plain">
@@ -184,6 +185,7 @@ function update() {
 const curve = document.getElementById('curve');
 const c2d = curve.getContext('2d');
 function drawCurve(p) {
+  if (curve.hidden) return;
   const dpr = window.devicePixelRatio || 1;
   const W = Math.round(curve.clientWidth * dpr), H = Math.round(curve.clientHeight * dpr);
   if (curve.width !== W || curve.height !== H) { curve.width = W; curve.height = H; }
