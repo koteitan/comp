@@ -90,8 +90,9 @@ class Compressor extends AudioWorkletProcessor {
       for (let t = 0; t < len; t++) {
         // h(t) = max(|x(t)*makeup|, h(t-1)*decay)
         h = Math.max(Math.abs(x[t] * makeup), h * decay);
-        // g(t) = h(t) <= 1 ? makeup : 1 + (h(t)-1)*ratio
-        const g = h <= 1 ? makeup : 1 + (h - 1) * ratio;
+        // g(t) = h(t) <= 1 ? makeup : makeup * (1 + (h(t)-1)*ratio) / h(t)
+        // so that the peak level becomes 1 + (h-1)*ratio and g is continuous at h = 1
+        const g = h <= 1 ? makeup : makeup * (1 + (h - 1) * ratio) / h;
         // out(t) = x(t)*g(t)
         y[t] = x[t] * g;
       }
