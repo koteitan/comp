@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Compressor</title>
 <style>
-  :root { color-scheme: dark; }
+  :root { color-scheme: dark; --thumb: 16px; }
   body {
     margin: 0; padding: 16px; background: #000; color: #ddd;
     font: 15px/1.6 system-ui, sans-serif;
@@ -20,8 +20,8 @@
   button:hover { background: #333; }
   #connect { margin: 12px 0 20px; }
 
-  /* fader: thumb width is used by the scale below */
-  .fader { --thumb: 16px; position: relative; margin-bottom: 20px; }
+  /* fader: --thumb is used by the scale below */
+  .fader { position: relative; margin-bottom: 20px; }
   input[type=range] {
     -webkit-appearance: none; appearance: none; display: block;
     width: 100%; height: 24px; margin: 0; background: transparent;
@@ -44,6 +44,10 @@
 
   canvas { display: block; width: 100%; height: 320px; background: #000; border: 1px solid #333; }
   #reset { margin-top: 8px; }
+
+  /* temporary tuning controls */
+  .tune { margin-top: 20px; display: grid; grid-template-columns: auto auto 1fr auto auto; gap: 8px 6px; align-items: center; }
+  .tune .value { font-family: ui-monospace, monospace; color: #999; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -61,6 +65,15 @@
 
   <canvas id="graph"></canvas>
   <button id="reset">グラフリセット</button>
+
+  <div class="tune">
+    <span>att time</span><span>|</span>
+    <input id="att" type="range" min="0" max="1000" step="1" value="100">
+    <span>|</span><span class="value" id="attValue"></span>
+    <span>ratio</span><span>0</span>
+    <input id="ratio" type="range" min="0" max="1" step="0.01" value="0">
+    <span>1</span><span class="value" id="ratioValue"></span>
+  </div>
 </main>
 
 <script id="worklet" type="text/plain">
@@ -69,10 +82,12 @@ class Compressor extends AudioWorkletProcessor {
   constructor() {
     super();
     this.makeup = 1;
+    this.decay = 0.95;
+    this.ratio = 0.8;
     this.h = [0, 0];
     this.binSize = Math.max(1, Math.round(sampleRate * 10 / BINS));
     this.resetBin();
-    this.port.onmessage = (e) => { this.makeup = e.data; };
+    this.port.onmessage = (e) => { Object.assign(this, e.data); };
   }
   resetBin() {
     this.n = 0;
@@ -82,7 +97,7 @@ class Compressor extends AudioWorkletProcessor {
   process(inputs, outputs) {
     const input = inputs[0], output = outputs[0];
     if (!input.length) return true;
-    const ratio = 0.8, decay = 0.95, makeup = this.makeup;
+    const ratio = this.ratio, decay = this.decay, makeup = this.makeup;
     const len = output[0].length;
     for (let c = 0; c < output.length; c++) {
       const x = input[c] || input[0], y = output[c];
@@ -134,8 +149,26 @@ for (let db = 0; db <= 20; db++) {
 
 // ---- audio ----
 let ctx = null, node = null, source = null, stream = null;
-const makeup = () => Math.pow(10, fader.value / 20);
-fader.addEventListener('input', () => { if (node) node.port.postMessage(makeup()); });
+const att = document.getElementById('att');
+const ratio = document.getElementById('ratio');
+
+// decay such that h falls by 3 dB in the att time: decay^n = 10^(-3/20), n = att * fs
+function params() {
+  const n = att.value / 1000 * (ctx ? ctx.sampleRate : 48000);
+  return {
+    makeup: Math.pow(10, fader.value / 20),
+    decay: n > 0 ? Math.pow(10, -3 / 20 / n) : 0,
+    ratio: Number(ratio.value),
+  };
+}
+function update() {
+  const p = params();
+  document.getElementById('attValue').textContent = `${att.value} ms (decay=${p.decay.toFixed(9)})`;
+  document.getElementById('ratioValue').textContent = p.ratio.toFixed(2);
+  if (node) node.port.postMessage(p);
+}
+for (const el of [fader, att, ratio]) el.addEventListener('input', update);
+update();
 
 function disconnect() {
   if (source) source.disconnect();
@@ -158,7 +191,7 @@ document.getElementById('connect').addEventListener('click', async () => {
       node.connect(ctx.destination);
     }
     await ctx.resume();
-    node.port.postMessage(makeup());
+    update();
     stream = await navigator.mediaDevices.getDisplayMedia({
       video: true,
       audio: {
