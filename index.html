@@ -48,6 +48,7 @@
   /* temporary tuning controls */
   .tune { margin-top: 20px; display: grid; grid-template-columns: auto auto 1fr auto auto; gap: 8px 6px; align-items: center; }
   .tune .value { font-family: ui-monospace, monospace; color: #999; white-space: nowrap; }
+  #curve { width: min(100%, 360px); height: auto; aspect-ratio: 1; margin-top: 12px; }
 </style>
 </head>
 <body>
@@ -74,6 +75,7 @@
     <input id="ratio" type="range" min="0" max="1" step="0.01" value="0">
     <span>1</span><span class="value" id="ratioValue"></span>
   </div>
+  <canvas id="curve"></canvas>
 </main>
 
 <script id="worklet" type="text/plain">
@@ -84,6 +86,7 @@ class Compressor extends AudioWorkletProcessor {
     this.makeup = 1;
     this.decay = 0.95;
     this.ratio = 0.8;
+    this.threshold = 1;
     this.h = [0, 0];
     this.binSize = Math.max(1, Math.round(sampleRate * 10 / BINS));
     this.resetBin();
@@ -97,7 +100,7 @@ class Compressor extends AudioWorkletProcessor {
   process(inputs, outputs) {
     const input = inputs[0], output = outputs[0];
     if (!input.length) return true;
-    const ratio = this.ratio, decay = this.decay, makeup = this.makeup;
+    const ratio = this.ratio, decay = this.decay, makeup = this.makeup, th = this.threshold;
     const len = output[0].length;
     for (let c = 0; c < output.length; c++) {
       const x = input[c] || input[0], y = output[c];
@@ -105,9 +108,10 @@ class Compressor extends AudioWorkletProcessor {
       for (let t = 0; t < len; t++) {
         // h(t) = max(|x(t)*makeup|, h(t-1)*decay)
         h = Math.max(Math.abs(x[t] * makeup), h * decay);
-        // g(t) = h(t) <= 1 ? makeup : makeup * (1 + (h(t)-1)*ratio) / h(t)
-        // so that the peak level becomes 1 + (h-1)*ratio and g is continuous at h = 1
-        const g = h <= 1 ? makeup : makeup * (1 + (h - 1) * ratio) / h;
+        // above the threshold, the level in dB is compressed by ratio:
+        //   out_dB = th_dB + (h_dB - th_dB)*ratio
+        // g(t) = h(t) <= th ? makeup : makeup * (h(t)/th)^(ratio-1)
+        const g = h <= th ? makeup : makeup * Math.pow(h / th, ratio - 1);
         // out(t) = x(t)*g(t)
         y[t] = x[t] * g;
       }
@@ -153,20 +157,77 @@ const att = document.getElementById('att');
 const ratio = document.getElementById('ratio');
 
 // decay such that h falls by 3 dB in the att time: decay^n = 10^(-3/20), n = att * fs
+// threshold such that the full-scale input (|x| = 1, h = makeup) gives 0 dB:
+//   th_dB + (M_dB - th_dB)*ratio = 0  ->  th_dB = -ratio*M_dB/(1-ratio)
 function params() {
   const n = att.value / 1000 * (ctx ? ctx.sampleRate : 48000);
+  const db = Number(fader.value), r = Number(ratio.value);
+  const thresholdDb = r < 1 ? -r * db / (1 - r) : Infinity;
   return {
-    makeup: Math.pow(10, fader.value / 20),
+    makeup: Math.pow(10, db / 20),
     decay: n > 0 ? Math.pow(10, -3 / 20 / n) : 0,
-    ratio: Number(ratio.value),
+    ratio: r,
+    threshold: Math.pow(10, thresholdDb / 20),
+    thresholdDb,
   };
 }
 function update() {
   const p = params();
   document.getElementById('attValue').textContent = `${att.value} ms (decay=${p.decay.toFixed(9)})`;
-  document.getElementById('ratioValue').textContent = p.ratio.toFixed(2);
+  document.getElementById('ratioValue').textContent = p.ratio.toFixed(2) +
+    (isFinite(p.thresholdDb) ? ` (threshold=${p.thresholdDb.toFixed(1)} dB)` : ' (threshold=none)');
   if (node) node.port.postMessage(p);
+  drawCurve(p);
 }
+
+// gain curve: in = level of x [dB], out = level of the output [dB]
+const curve = document.getElementById('curve');
+const c2d = curve.getContext('2d');
+function drawCurve(p) {
+  const dpr = window.devicePixelRatio || 1;
+  const W = Math.round(curve.clientWidth * dpr), H = Math.round(curve.clientHeight * dpr);
+  if (curve.width !== W || curve.height !== H) { curve.width = W; curve.height = H; }
+  const MIN = -30, MAX = 20;
+  const pad = 28 * dpr, size = Math.min(W, H) - pad - 8 * dpr;
+  const px = (db) => pad + (db - MIN) / (MAX - MIN) * size;
+  const py = (db) => 8 * dpr + (MAX - db) / (MAX - MIN) * size;
+  c2d.fillStyle = '#000';
+  c2d.fillRect(0, 0, W, H);
+  c2d.font = `${10 * dpr}px system-ui, sans-serif`;
+  c2d.fillStyle = '#999';
+  for (let db = MIN; db <= MAX; db += 10) {
+    c2d.fillStyle = db === 0 ? '#0c0' : '#333';
+    c2d.fillRect(px(db), py(MAX), Math.max(1, dpr), size);
+    c2d.fillRect(px(MIN), py(db), size, Math.max(1, dpr));
+    c2d.fillStyle = '#999';
+    c2d.textAlign = 'center'; c2d.textBaseline = 'top';
+    c2d.fillText(String(db), px(db), py(MIN) + 3 * dpr);
+    c2d.textAlign = 'right'; c2d.textBaseline = 'middle';
+    c2d.fillText(String(db), pad - 4 * dpr, py(db));
+  }
+  c2d.textAlign = 'right'; c2d.textBaseline = 'bottom';
+  c2d.fillText('in [dB]', px(MAX), py(MIN) - 3 * dpr);
+  c2d.textAlign = 'left'; c2d.textBaseline = 'top';
+  c2d.fillText('out [dB]', px(MIN) + 4 * dpr, py(MAX) + 3 * dpr);
+
+  const md = Number(fader.value);
+  c2d.save();
+  c2d.beginPath();
+  c2d.rect(px(MIN), py(MAX), size, size);
+  c2d.clip();
+  c2d.strokeStyle = '#f33';
+  c2d.lineWidth = 2 * dpr;
+  c2d.beginPath();
+  for (let i = 0; i <= 500; i++) {
+    const inDb = MIN + (MAX - MIN) * i / 500;
+    const h = inDb + md;
+    const out = h <= p.thresholdDb ? h : p.thresholdDb + (h - p.thresholdDb) * p.ratio;
+    if (i === 0) c2d.moveTo(px(inDb), py(out)); else c2d.lineTo(px(inDb), py(out));
+  }
+  c2d.stroke();
+  c2d.restore();
+}
+window.addEventListener('resize', () => drawCurve(params()));
 for (const el of [fader, att, ratio]) el.addEventListener('input', update);
 update();
 
